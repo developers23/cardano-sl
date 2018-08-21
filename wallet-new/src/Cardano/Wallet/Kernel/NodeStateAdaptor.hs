@@ -26,7 +26,7 @@ module Cardano.Wallet.Kernel.NodeStateAdaptor (
   , getNextEpochSlotDuration
   , curSoftwareVersion
   , compileInfo
-  , getNtpStatus
+  , getNtpDrift
     -- * Support for tests
   , NodeStateUnavailable(..)
   , MockNodeStateParams(..)
@@ -40,13 +40,16 @@ import           Universum
 import           Control.Lens (lens)
 import           Control.Monad.IO.Unlift (MonadUnliftIO, UnliftIO (UnliftIO),
                      askUnliftIO, unliftIO, withUnliftIO)
+import           Control.Monad.STM (retry)
 import           Data.SafeCopy (base, deriveSafeCopy)
-import           Data.Time.Units (Millisecond)
+import           Data.Time.Units (Millisecond, toMicroseconds)
 import           Formatting (bprint, build, sformat, shown, (%))
 import qualified Formatting.Buildable
 import           Ntp.Client (NtpStatus (..))
+import           Ntp.Packet (NtpOffset)
 import           Serokell.Data.Memory.Units (Byte)
 
+import qualified Cardano.Wallet.API.V1.Types as V1
 import           Pos.Chain.Block (Block, HeaderHash, MainBlock, blockHeader,
                      headerHash, mainBlockSlot, prevBlockL)
 import           Pos.Chain.Update (HasUpdateConfiguration, SoftwareVersion,
@@ -238,7 +241,7 @@ data NodeStateAdaptor m = Adaptor {
     , compileInfo :: m CompileTimeInfo
 
       -- | Ask the NTP client for the status
-    , getNtpStatus :: m NtpStatus
+    , getNtpDrift :: V1.ForceNtpCheck -> m V1.TimeInfo
     }
 
 {-------------------------------------------------------------------------------
@@ -323,7 +326,7 @@ newNodeStateAdaptor nr ntpStatus = Adaptor {
     , getSlotCount             = return $ pcEpochSlots protocolConstants
     , curSoftwareVersion       = return $ Upd.curSoftwareVersion
     , compileInfo              = return $ Util.compileInfo
-    , getNtpStatus             = liftIO $ readTVarIO ntpStatus
+    , getNtpDrift              = defaultGetNtpDrift ntpStatus
     }
   where
     run :: forall a.
@@ -373,6 +376,30 @@ defaultGetSlotStart slotId =
 
 defaultGetNextEpochSlotDuration :: MonadIO m => WithNodeState m Millisecond
 defaultGetNextEpochSlotDuration = Slotting.getNextEpochSlotDuration
+
+-- | Get the difference between NTP time and local system time, nothing if the
+-- NTP server couldn't be reached in the last 30min.
+--
+-- Note that one can force a new query to the NTP server in which case, it may
+-- take up to 30s to resolve.
+defaultGetNtpDrift :: MonadIO m => TVar NtpStatus -> V1.ForceNtpCheck -> m V1.TimeInfo
+defaultGetNtpDrift tvar ntpCheckBehavior = liftIO $ do
+    when (ntpCheckBehavior == V1.ForceNtpCheck) $
+        atomically $ writeTVar tvar NtpSyncPending
+    mkTimeInfo <$> waitForNtpStatus
+  where
+    mkTimeInfo :: Maybe NtpOffset -> V1.TimeInfo
+    mkTimeInfo = V1.TimeInfo . fmap (V1.mkLocalTimeDifference . toMicroseconds)
+
+    -- NOTE This usually takes ~100-300ms and at most 30s
+    waitForNtpStatus :: MonadIO m => m (Maybe NtpOffset)
+    waitForNtpStatus = atomically $ do
+        status <- readTVar tvar
+        case status of
+            NtpSyncPending     -> retry
+            NtpDrift offset    -> pure (Just offset)
+            NtpSyncUnavailable -> pure Nothing
+
 
 -- | Get the most recent main block starting at the specified header
 --
@@ -433,12 +460,12 @@ mockNodeState MockNodeStateParams{..} =
         , getTipSlotId             = return mockNodeStateTipSlotId
         , getSecurityParameter     = return mockNodeStateSecurityParameter
         , getNextEpochSlotDuration = return mockNodeStateNextEpochSlotDuration
-        , getNtpStatus             = return mockNodeStateNtpStatus
         , getSlotStart             = return . mockNodeStateSlotStart
         , getMaxTxSize             = return $ bvdMaxTxSize genesisBlockVersionData
         , getSlotCount             = return $ pcEpochSlots protocolConstants
         , curSoftwareVersion       = return $ Upd.curSoftwareVersion
         , compileInfo              = return $ Util.compileInfo
+        , getNtpDrift              = return . mockNodeStateNtpDrift
         }
 
 -- | Variation on 'mockNodeState' that uses the default params
@@ -462,8 +489,8 @@ data MockNodeStateParams = NodeConstraints => MockNodeStateParams {
         -- | Value for 'getNextEpochSlotDuration'
       , mockNodeStateNextEpochSlotDuration :: Millisecond
 
-        -- | Value for 'getNtpStatus'
-      , mockNodeStateNtpStatus :: NtpStatus
+        -- | Value for 'getNtpDrift'
+      , mockNodeStateNtpDrift :: V1.ForceNtpCheck -> V1.TimeInfo
       }
 
 -- | Default 'MockNodeStateParams'
@@ -486,7 +513,7 @@ defMockNodeStateParams =
         , mockNodeStateSlotStart             = notDefined "mockNodeStateSlotStart"
         , mockNodeStateNextEpochSlotDuration = notDefined "mockNodeStateNextEpochSlotDuration"
         , mockNodeStateSecurityParameter     = SecurityParameter 2160
-        , mockNodeStateNtpStatus             = NtpSyncUnavailable
+        , mockNodeStateNtpDrift              = const (V1.TimeInfo Nothing)
         }
   where
     notDefined :: Text -> a
