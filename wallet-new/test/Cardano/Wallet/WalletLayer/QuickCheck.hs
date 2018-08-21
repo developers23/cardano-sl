@@ -13,15 +13,20 @@ import           Cardano.Wallet.Orphans.Arbitrary ()
 import           Cardano.Wallet.WalletLayer (ActiveWalletLayer (..),
                      CreateAccountError (..), DeleteAccountError (..),
                      DeleteWalletError (..), GetAccountError (..),
-                     GetAccountsError (..), GetWalletError (..),
-                     PassiveWalletLayer (..), UpdateAccountError (..),
-                     UpdateWalletError (..), UpdateWalletPasswordError (..),
-                     ValidateAddressError (..))
+                     GetAccountsError (..), GetUtxosError (..),
+                     GetWalletError (..), PassiveWalletLayer (..),
+                     UpdateAccountError (..), UpdateWalletError (..),
+                     UpdateWalletPasswordError (..))
 
 import           Cardano.Wallet.API.V1.Types (V1 (..))
+import qualified Cardano.Wallet.Kernel.Accounts as Kernel
+import           Pos.Core.Txp (TxIn (..), TxOut, TxOutAux)
 
 import           Pos.Core ()
-import           Test.QuickCheck (Arbitrary, arbitrary, generate, oneof)
+import           Test.Pos.Core.Arbitrary.Txp ()
+import           Test.QuickCheck (Arbitrary (..), arbitrary, choose, generate,
+                     genericShrink, oneof, scale)
+import           Test.QuickCheck.Arbitrary.Generic (genericArbitrary)
 
 -- | Initialize the passive wallet.
 -- The passive wallet cannot send new transactions.
@@ -41,6 +46,7 @@ bracketPassiveWallet =
         , updateWallet         = \_ _   -> liftedGen
         , updateWalletPassword = \_ _   -> liftedGen
         , deleteWallet         = \_     -> liftedGen
+        , getUtxos             = \_     -> liftedGen
 
         , createAccount        = \_ _   -> liftedGen
         , getAccounts          = \_     -> liftedGen
@@ -127,6 +133,12 @@ instance Arbitrary GetWalletError where
                       , GetWalletError . V1 <$> arbitrary
                       ]
 
+instance Arbitrary GetUtxosError where
+    arbitrary = oneof [ pure (GetUtxosWalletIdDecodingFailed "foobar")
+                      , GetUtxosErrorFromGetAccountError <$> arbitrary
+                      , GetUtxosErrorFromGetAccountsError <$> arbitrary
+                      ]
+
 instance Arbitrary UpdateWalletPasswordError where
     arbitrary = oneof [ UpdateWalletPasswordError <$> arbitrary
                       , UpdateWalletPasswordWalletIdDecodingFailed <$> arbitrary
@@ -141,4 +153,9 @@ instance Arbitrary UpdateWalletError where
 instance Arbitrary ValidateAddressError where
     arbitrary = oneof [ ValidateAddressDecodingFailed <$> arbitrary
                       , ValidateAddressNotOurs <$> arbitrary
+                      ]
+
+instance Arbitrary GetUtxosError where
+    arbitrary = oneof [ GetWalletUtxosWalletIdDecodingFailed <$> arbitrary
+                      , GetUtxosErrorFromGetAccountsError <$> arbitrary
                       ]
