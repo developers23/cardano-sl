@@ -10,6 +10,7 @@ import           Pos.Chain.Txp (TxpConfiguration)
 import           Pos.Client.Txp.Util (defaultInputSelectionPolicy)
 import qualified Pos.Client.Txp.Util as V0
 import qualified Pos.Core as Core
+import           Pos.Core.NetworkMagic (NetworkMagic)
 import           Pos.Core.Txp (TxAux)
 import           Pos.Crypto (ProtocolMagic)
 import qualified Pos.Util.Servant as V0
@@ -34,24 +35,26 @@ import           Cardano.Wallet.API.V1.Types
 handlers
     :: HasConfigurations
     => ProtocolMagic
+    -> NetworkMagic
     -> TxpConfiguration
     -> (TxAux -> MonadV1 Bool)
     -> ServerT Transactions.API MonadV1
-handlers pm txpConfig submitTx =
-             newTransaction pm txpConfig submitTx
+handlers pm nm txpConfig submitTx =
+             newTransaction pm nm txpConfig submitTx
         :<|> allTransactions
         :<|> estimateFees pm
-        :<|> redeemAda pm txpConfig submitTx
+        :<|> redeemAda pm nm txpConfig submitTx
 
 newTransaction
     :: forall ctx m
      . (V0.MonadWalletTxFull ctx m)
     => ProtocolMagic
+    -> NetworkMagic
     -> TxpConfiguration
     -> (TxAux -> m Bool)
     -> Payment
     -> m (WalletResponse Transaction)
-newTransaction pm txpConfig submitTx Payment {..} = do
+newTransaction pm nm txpConfig submitTx Payment {..} = do
     ws <- V0.askWalletSnapshot
     sourceWallet <- migrate (psWalletId pmtSource)
 
@@ -74,7 +77,7 @@ newTransaction pm txpConfig submitTx Payment {..} = do
     addrCoinList <- migrate $ NE.toList pmtDestinations
     let (V1 policy) = fromMaybe (V1 defaultInputSelectionPolicy) pmtGroupingPolicy
     let batchPayment = V0.NewBatchPayment cAccountId addrCoinList policy
-    cTx <- V0.newPaymentBatch pm txpConfig submitTx spendingPw batchPayment
+    cTx <- V0.newPaymentBatch pm nm txpConfig submitTx spendingPw batchPayment
     single <$> migrate cTx
 
 
@@ -120,16 +123,17 @@ allTransactions mwalletId mAccIdx mAddr requestParams fops sops  =
 estimateFees
     :: (MonadThrow m, V0.MonadFees ctx m)
     => ProtocolMagic
+    -> NetworkMagic
     -> Payment
     -> m (WalletResponse EstimatedFees)
-estimateFees pm Payment{..} = do
+estimateFees pm nm Payment{..} = do
     ws <- V0.askWalletSnapshot
     let (V1 policy) = fromMaybe (V1 defaultInputSelectionPolicy) pmtGroupingPolicy
         pendingAddrs = V0.getPendingAddresses ws policy
     cAccountId <- migrate pmtSource
     utxo <- V0.getMoneySourceUtxo ws (V0.AccountMoneySource cAccountId)
     outputs <- V0.coinDistrToOutputs =<< mapM migrate pmtDestinations
-    efee <- V0.runTxCreator policy (V0.computeTxFee pm pendingAddrs utxo outputs)
+    efee <- V0.runTxCreator policy (V0.computeTxFee pm nm pendingAddrs utxo outputs)
     case efee of
         Right fee ->
             single <$> migrate fee
@@ -139,11 +143,12 @@ estimateFees pm Payment{..} = do
 redeemAda
     :: HasConfigurations
     => ProtocolMagic
+    -> NetworkMagic
     -> TxpConfiguration
     -> (TxAux -> MonadV1 Bool)
     -> Redemption
     -> MonadV1 (WalletResponse Transaction)
-redeemAda pm txpConfig submitTx r = do
+redeemAda pm nm txpConfig submitTx r = do
     let ShieldedRedemptionCode seed = redemptionRedemptionCode r
         V1 spendingPassword = redemptionSpendingPassword r
         walletId = redemptionWalletId r
@@ -158,10 +163,10 @@ redeemAda pm txpConfig submitTx r = do
                     , V0.pvSeed = seed
                     , V0.pvBackupPhrase = phrase
                     }
-            V0.redeemAdaPaperVend pm txpConfig submitTx spendingPassword cpaperRedeem
+            V0.redeemAdaPaperVend pm nm txpConfig submitTx spendingPassword cpaperRedeem
         Nothing -> do
             let cwalletRedeem = V0.CWalletRedeem
                     { V0.crWalletId = caccountId
                     , V0.crSeed = seed
                     }
-            V0.redeemAda pm txpConfig submitTx spendingPassword cwalletRedeem
+            V0.redeemAda pm nm txpConfig submitTx spendingPassword cwalletRedeem

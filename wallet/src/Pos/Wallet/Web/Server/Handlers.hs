@@ -21,6 +21,7 @@ import           Servant.Swagger.UI (swaggerSchemaUIServer)
 
 import           Pos.Chain.Txp (TxpConfiguration)
 import           Pos.Chain.Update (curSoftwareVersion)
+import           Pos.Core.NetworkMagic (NetworkMagic)
 import           Pos.Core.Txp (TxAux)
 import           Pos.Crypto (ProtocolMagic)
 import           Pos.Util.CompileInfo (HasCompileInfo)
@@ -40,13 +41,14 @@ servantHandlersWithSwagger
        , HasCompileInfo
        )
     => ProtocolMagic
+    -> NetworkMagic
     -> TxpConfiguration
     -> TVar NtpStatus
     -> (TxAux -> m Bool)
     -> (forall x. m x -> Handler x)
     -> Server A.WalletSwaggerApi
-servantHandlersWithSwagger pm txpConfig ntpStatus submitTx nat =
-    hoistServer A.walletApi nat (servantHandlers pm txpConfig ntpStatus submitTx)
+servantHandlersWithSwagger pm nm txpConfig ntpStatus submitTx nat =
+    hoistServer A.walletApi nat (servantHandlers pm nm txpConfig ntpStatus submitTx)
    :<|>
     swaggerSchemaUIServer swaggerSpecForWalletApi
 
@@ -59,22 +61,23 @@ servantHandlers
        , HasCompileInfo
        )
     => ProtocolMagic
+    -> NetworkMagic
     -> TxpConfiguration
     -> TVar NtpStatus
     -> (TxAux -> m Bool)
     -> ServerT A.WalletApi m
-servantHandlers pm txpConfig ntpStatus submitTx = toServant' A.WalletApiRecord
+servantHandlers pm nm txpConfig ntpStatus submitTx = toServant' A.WalletApiRecord
     { _test        = testHandlers
-    , _wallets     = walletsHandlers
-    , _accounts    = accountsHandlers
-    , _addresses   = addressesHandlers
+    , _wallets     = walletsHandlers nm
+    , _accounts    = accountsHandlers nm
+    , _addresses   = addressesHandlers nm
     , _profile     = profileHandlers
-    , _txs         = txsHandlers pm txpConfig submitTx
+    , _txs         = txsHandlers pm nm txpConfig submitTx
     , _update      = updateHandlers
-    , _redemptions = redemptionsHandlers pm txpConfig submitTx
+    , _redemptions = redemptionsHandlers pm nm txpConfig submitTx
     , _reporting   = reportingHandlers
     , _settings    = settingsHandlers ntpStatus
-    , _backup      = backupHandlers
+    , _backup      = backupHandlers nm
     , _info        = infoHandlers
     , _system      = systemHandlers
     }
@@ -87,30 +90,39 @@ testHandlers = toServant' A.WTestApiRecord
     , _testState = M.dumpState
     }
 
-walletsHandlers :: MonadFullWalletWebMode ctx m => ServerT A.WWalletsApi m
-walletsHandlers = toServant' A.WWalletsApiRecord
-    { _getWallet              = M.getWallet
-    , _getWallets             = M.getWallets
-    , _newWallet              = M.newWallet
-    , _updateWallet           = M.updateWallet
-    , _restoreWallet          = M.restoreWalletFromSeed
-    , _deleteWallet           = M.deleteWallet
-    , _importWallet           = M.importWallet
-    , _changeWalletPassphrase = M.changeWalletPassphrase
+walletsHandlers
+    :: MonadFullWalletWebMode ctx m
+    => NetworkMagic
+    -> ServerT A.WWalletsApi m
+walletsHandlers nm = toServant' A.WWalletsApiRecord
+    { _getWallet              = M.getWallet nm
+    , _getWallets             = M.getWallets nm
+    , _newWallet              = M.newWallet nm
+    , _updateWallet           = M.updateWallet nm
+    , _restoreWallet          = M.restoreWalletFromSeed nm
+    , _deleteWallet           = M.deleteWallet nm
+    , _importWallet           = M.importWallet nm
+    , _changeWalletPassphrase = M.changeWalletPassphrase nm
     }
 
-accountsHandlers :: MonadFullWalletWebMode ctx m => ServerT A.WAccountsApi m
-accountsHandlers = toServant' A.WAccountsApiRecord
-    { _getAccount    = M.getAccount
-    , _getAccounts   = M.getAccounts
-    , _updateAccount = M.updateAccount
-    , _newAccount    = M.newAccount RandomSeed
+accountsHandlers
+    :: MonadFullWalletWebMode ctx m
+    => NetworkMagic
+    -> ServerT A.WAccountsApi m
+accountsHandlers nm = toServant' A.WAccountsApiRecord
+    { _getAccount    = M.getAccount nm
+    , _getAccounts   = M.getAccounts nm
+    , _updateAccount = M.updateAccount nm
+    , _newAccount    = M.newAccount nm RandomSeed
     , _deleteAccount = M.deleteAccount
     }
 
-addressesHandlers :: MonadFullWalletWebMode ctx m => ServerT A.WAddressesApi m
-addressesHandlers = toServant' A.WAddressesApiRecord
-    { _newAddress     = M.newAddress RandomSeed
+addressesHandlers
+    :: MonadFullWalletWebMode ctx m
+    => NetworkMagic
+    -> ServerT A.WAddressesApi m
+addressesHandlers nm = toServant' A.WAddressesApiRecord
+    { _newAddress     = M.newAddress nm RandomSeed
     , _isValidAddress = M.isValidAddress
     }
 
@@ -123,13 +135,14 @@ profileHandlers = toServant' A.WProfileApiRecord
 txsHandlers
     :: MonadFullWalletWebMode ctx m
     => ProtocolMagic
+    -> NetworkMagic
     -> TxpConfiguration
     -> (TxAux -> m Bool)
     -> ServerT A.WTxsApi m
-txsHandlers pm txpConfig submitTx = toServant' A.WTxsApiRecord
-    { _newPayment                = M.newPayment pm txpConfig submitTx
-    , _newPaymentBatch           = M.newPaymentBatch pm txpConfig submitTx
-    , _txFee                     = M.getTxFee pm
+txsHandlers pm nm txpConfig submitTx = toServant' A.WTxsApiRecord
+    { _newPayment                = M.newPayment pm nm txpConfig submitTx
+    , _newPaymentBatch           = M.newPaymentBatch pm nm txpConfig submitTx
+    , _txFee                     = M.getTxFee pm nm
     , _resetFailedPtxs           = M.resetAllFailedPtxs
     , _cancelApplyingPtxs        = M.cancelAllApplyingPtxs
     , _cancelSpecificApplyingPtx = M.cancelOneApplyingPtx
@@ -147,12 +160,13 @@ updateHandlers = toServant' A.WUpdateApiRecord
 redemptionsHandlers
     :: MonadFullWalletWebMode ctx m
     => ProtocolMagic
+    -> NetworkMagic
     -> TxpConfiguration
     -> (TxAux -> m Bool)
     -> ServerT A.WRedemptionsApi m
-redemptionsHandlers pm txpConfig submitTx = toServant' A.WRedemptionsApiRecord
-    { _redeemADA          = M.redeemAda pm txpConfig submitTx
-    , _redeemADAPaperVend = M.redeemAdaPaperVend pm txpConfig submitTx
+redemptionsHandlers pm nm txpConfig submitTx = toServant' A.WRedemptionsApiRecord
+    { _redeemADA          = M.redeemAda pm nm txpConfig submitTx
+    , _redeemADAPaperVend = M.redeemAdaPaperVend pm nm txpConfig submitTx
     }
 
 reportingHandlers :: MonadFullWalletWebMode ctx m => ServerT A.WReportingApi m
@@ -168,10 +182,13 @@ settingsHandlers ntpStatus = toServant' A.WSettingsApiRecord
     , _localTimeDifference = fromMaybe 0 <$> M.localTimeDifference ntpStatus
     }
 
-backupHandlers :: MonadFullWalletWebMode ctx m => ServerT A.WBackupApi m
-backupHandlers = toServant' A.WBackupApiRecord
-    { _importBackupJSON = M.importWalletJSON
-    , _exportBackupJSON = M.exportWalletJSON
+backupHandlers
+    :: MonadFullWalletWebMode ctx m
+    => NetworkMagic
+    -> ServerT A.WBackupApi m
+backupHandlers nm = toServant' A.WBackupApiRecord
+    { _importBackupJSON = M.importWalletJSON nm
+    , _exportBackupJSON = M.exportWalletJSON nm
     }
 
 infoHandlers :: (MonadFullWalletWebMode ctx m, HasCompileInfo) => ServerT A.WInfoApi m
