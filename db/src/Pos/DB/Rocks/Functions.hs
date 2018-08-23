@@ -38,7 +38,7 @@ import           Control.Monad.Trans.Resource (MonadResource)
 import           Data.Conduit (ConduitT, bracketP, yield)
 import qualified Database.RocksDB as Rocks
 import           System.Directory (createDirectoryIfMissing, doesDirectoryExist,
-                     removeDirectoryRecursive)
+                     removeDirectoryRecursive, withCurrentDirectory)
 import           System.FilePath ((</>))
 
 import           Pos.Binary.Class (Bi)
@@ -56,9 +56,11 @@ import           Pos.Util.Util (lensOf)
 ----------------------------------------------------------------------------
 
 openRocksDB :: MonadIO m => FilePath -> m DB
-openRocksDB fp = DB Rocks.defaultReadOptions Rocks.defaultWriteOptions options
-                   <$> Rocks.open options
-  where options = (Rocks.defaultOptions fp)
+openRocksDB fp = do
+    liftIO $ createDirectoryIfMissing True fp
+    DB Rocks.defaultReadOptions Rocks.defaultWriteOptions options
+        <$> (liftIO . withCurrentDirectory fp $ Rocks.open options)
+  where options = (Rocks.defaultOptions ".")
           { Rocks.optionsCreateIfMissing = True
           , Rocks.optionsCompression     = Rocks.NoCompression
           }
