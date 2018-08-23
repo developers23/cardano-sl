@@ -116,6 +116,12 @@ let
     });
   };
 
+  metricOverlay = self: super: {
+    mkDerivation = args: super.mkDerivation (args // {
+      enablePhaseMetrics = true;
+    });
+  };
+
   cardanoPkgsBase = ((import ./pkgs { inherit pkgs; }).override {
     ghc = overrideDerivation pkgs.haskell.compiler.ghc822 (drv: {
       patches = drv.patches ++ [ ./ghc-8.0.2-darwin-rec-link.patch ];
@@ -123,6 +129,7 @@ let
   });
 
   activeOverlays = [ requiredOverlay ]
+      ++ [ metricOverlay ]
       ++ optional enableBenchmarks benchmarkOverlay
       ++ optional enableDebugging debugOverlay
       ++ optional forceDontCheck dontCheckOverlay;
